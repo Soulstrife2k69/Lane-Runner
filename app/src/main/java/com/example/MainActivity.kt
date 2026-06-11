@@ -2,6 +2,9 @@ package com.example
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -47,6 +50,122 @@ import java.util.*
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
+
+// ==========================================
+// PROCEDURAL SOUND EFFECT SYNTHESIZER
+// ==========================================
+
+enum class SoundType {
+    JUMP, COIN, POWERUP, IMPACT_OUCH, SHIELD_SHATTER
+}
+
+object SoundSynthesizer {
+    fun play(soundType: SoundType) {
+        Thread {
+            try {
+                val sampleRate = 22050
+                val durationMs = when (soundType) {
+                    SoundType.COIN -> 180
+                    SoundType.JUMP -> 150
+                    SoundType.POWERUP -> 330
+                    SoundType.IMPACT_OUCH -> 250
+                    SoundType.SHIELD_SHATTER -> 420
+                }
+                val numSamples = (durationMs * sampleRate) / 1000
+                val buffer = ShortArray(numSamples)
+                
+                when (soundType) {
+                    SoundType.COIN -> {
+                        // Two sweet notes: B5 (987.77Hz) then E6 (1318.51Hz) - Classic Game Coin!
+                        val midPoint = numSamples / 2
+                        for (i in 0 until numSamples) {
+                            val freq = if (i < midPoint) 987.77f else 1318.51f
+                            val t = i.toFloat() / sampleRate
+                            val envelope = if (i < midPoint) {
+                                (1f - i.toFloat() / midPoint)
+                            } else {
+                                (1f - (i - midPoint).toFloat() / (numSamples - midPoint))
+                            }
+                            val raw = sin(2 * Math.PI * freq * t).toFloat()
+                            val square = if (raw > 0f) 0.5f else -0.5f
+                            buffer[i] = ((raw * 0.35f + square * 0.15f) * Short.MAX_VALUE * envelope).toInt().toShort()
+                        }
+                    }
+                    SoundType.JUMP -> {
+                        // Rising slide sweep: start low, sweep high
+                        for (i in 0 until numSamples) {
+                            val progress = i.toFloat() / numSamples
+                            val freq = 200f + progress * 580f // 200Hz to 780Hz sweep
+                            val t = i.toFloat() / sampleRate
+                            val envelope = 1f - progress
+                            val raw = sin(2 * Math.PI * freq * t).toFloat()
+                            buffer[i] = (raw * Short.MAX_VALUE * envelope * 0.45f).toInt().toShort()
+                        }
+                    }
+                    SoundType.POWERUP -> {
+                        // Rising chord progression sweep (arpeggio)
+                        for (i in 0 until numSamples) {
+                            val progress = i.toFloat() / numSamples
+                            val chordIndex = (progress * 4).toInt()
+                            val freq = when (chordIndex) {
+                                0 -> 330f // E4
+                                1 -> 415f // G#4
+                                2 -> 494f // B4
+                                else -> 660f // E5
+                            }
+                            val t = i.toFloat() / sampleRate
+                            val envelope = 1f - (progress * 0.6f)
+                            val raw = sin(2 * Math.PI * freq * t).toFloat()
+                            val subDuty = if (sin(2 * Math.PI * (freq / 2f) * t) > 0f) 0.25f else -0.25f
+                            buffer[i] = ((raw * 0.45f + subDuty * 0.15f) * Short.MAX_VALUE * envelope).toInt().toShort()
+                        }
+                    }
+                    SoundType.IMPACT_OUCH -> {
+                        // Descending heavy boom crash + static rumble noise
+                        val random = Random()
+                        for (i in 0 until numSamples) {
+                            val progress = i.toFloat() / numSamples
+                            val freq = 220f - progress * 170f // 220Hz down to 50Hz
+                            val t = i.toFloat() / sampleRate
+                            val envelope = (1f - progress) * (1f - progress)
+                            val noise = (random.nextFloat() * 2f - 1f) * 0.35f
+                            val synth = sin(2 * Math.PI * freq * t).toFloat()
+                            buffer[i] = ((synth * 0.55f + noise * 0.45f) * Short.MAX_VALUE * envelope * 0.65f).toInt().toShort()
+                        }
+                    }
+                    SoundType.SHIELD_SHATTER -> {
+                        // Glass/Metal shatter high energetic burst noise
+                        val random = Random()
+                        for (i in 0 until numSamples) {
+                            val progress = i.toFloat() / numSamples
+                            val t = i.toFloat() / sampleRate
+                            val envelope = 1f - progress
+                            val shimmer = sin(2 * Math.PI * 2600f * t).toFloat() * 0.22f
+                            val shimmer2 = sin(2 * Math.PI * 4200f * t).toFloat() * 0.18f
+                            val whiteNoise = (random.nextFloat() * 2f - 1f) * 0.6f
+                            buffer[i] = ((shimmer + shimmer2 + whiteNoise) * Short.MAX_VALUE * envelope * 0.45f).toInt().toShort()
+                        }
+                    }
+                }
+
+                val track = AudioTrack(
+                    AudioManager.STREAM_MUSIC,
+                    sampleRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    buffer.size * 2,
+                    AudioTrack.MODE_STATIC
+                )
+                track.write(buffer, 0, buffer.size)
+                track.play()
+                Thread.sleep(durationMs.toLong() + 50L)
+                track.release()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }.start()
+    }
+}
 
 // ==========================================
 // LANE RUNNER ENUMS AND DATA STRUCTURES
@@ -155,6 +274,8 @@ fun GameContainer(modifier: Modifier = Modifier) {
     var score by remember { mutableFloatStateOf(0f) }
     var coinsCollected by remember { mutableIntStateOf(0) }
     var highScore by remember { mutableFloatStateOf(sharedPrefs.getFloat("high_score", 0f)) }
+    var playerLives by remember { mutableIntStateOf(3) }
+    var invincibilityTicks by remember { mutableIntStateOf(0) }
     
     // Player controls & positioning
     var currentLane by remember { mutableStateOf(Lane.CENTER) }
@@ -223,6 +344,8 @@ fun GameContainer(modifier: Modifier = Modifier) {
         gameSpeed = 0.008f
         roadDecorationScroll = 0f
         lastSpawnTime = 0L
+        playerLives = 3
+        invincibilityTicks = 0
     }
 
     // Save score helper
@@ -271,10 +394,15 @@ fun GameContainer(modifier: Modifier = Modifier) {
                     shieldDuration = shieldDurationLeft,
                     magnetDuration = magnetDurationLeft,
                     gameSpeed = gameSpeed,
+                    isInvincible = invincibilityTicks > 0,
                     onScoreTick = { score += 0.15f * (1f + (score / 1000f).toInt()) },
-                    onCoinsTick = { coinsCollected++ },
+                    onCoinsTick = { 
+                        coinsCollected++
+                        SoundSynthesizer.play(SoundType.COIN)
+                    },
                     onShieldBreak = {
                         shieldDurationLeft = 0f
+                        SoundSynthesizer.play(SoundType.SHIELD_SHATTER)
                         // Trigger shield blast visual
                         repeat(20) {
                             particles.add(
@@ -291,10 +419,47 @@ fun GameContainer(modifier: Modifier = Modifier) {
                         }
                         popups.add(ScorePopup("SHIELD SHATTERED!", currentLane, 0.85f, color = Color(0xFF00FFFF)))
                     },
-                    onCrash = { handleGameOver() },
+                    onCrash = {
+                        if (playerLives > 1) {
+                            playerLives--
+                            invincibilityTicks = 60 // 1 second buffer
+                            SoundSynthesizer.play(SoundType.IMPACT_OUCH)
+                            
+                            // Visual red distress particles
+                            repeat(18) {
+                                val laneX = when (currentLane) {
+                                    Lane.LEFT -> -0.4f
+                                    Lane.CENTER -> 0f
+                                    Lane.RIGHT -> 0.4f
+                                }
+                                particles.add(
+                                    GameParticle(
+                                        x = laneX,
+                                        y = 0.85f,
+                                        vx = (Math.random() * 0.04 - 0.02).toFloat(),
+                                        vy = (Math.random() * 0.03 - 0.03).toFloat(),
+                                        color = Color(0xFFFF2E63),
+                                        size = (8 + Math.random() * 12).toFloat(),
+                                        lifeDecay = 0.025f
+                                    )
+                                )
+                            }
+                            popups.add(ScorePopup("💔 HP REDUCED! (-1 HP)", currentLane, 0.85f, color = Color(0xFFFF2E63)))
+                        } else {
+                            playerLives = 0
+                            SoundSynthesizer.play(SoundType.IMPACT_OUCH)
+                            handleGameOver()
+                        }
+                    },
                     onReward = { bonusReward -> score += bonusReward },
-                    onShieldCollect = { shieldDurationLeft = 400f }, // ~6.5 seconds
-                    onMagnetCollect = { magnetDurationLeft = 500f }, // ~8.3 seconds
+                    onShieldCollect = { 
+                        shieldDurationLeft = 400f // ~6.5 seconds
+                        SoundSynthesizer.play(SoundType.POWERUP)
+                    },
+                    onMagnetCollect = { 
+                        magnetDurationLeft = 500f // ~8.3 seconds
+                        SoundSynthesizer.play(SoundType.POWERUP)
+                    },
                     onSpawnEntities = { currentTime ->
                         // Wave spawning mechanic based on current speed
                         if (currentTime - lastSpawnTime > maxOf(900, 1600 - (gameSpeed * 20000).toLong())) {
@@ -303,6 +468,9 @@ fun GameContainer(modifier: Modifier = Modifier) {
                         }
                     },
                     updatePlayerAnimation = {
+                        if (invincibilityTicks > 0) {
+                            invincibilityTicks--
+                        }
                         runAnimationCycle += 0.22f + gameSpeed * 1.5f
                         if (runAnimationCycle > Math.PI.toFloat() * 2) {
                             runAnimationCycle -= Math.PI.toFloat() * 2
@@ -435,6 +603,7 @@ fun GameContainer(modifier: Modifier = Modifier) {
                                         // Jump (Swipe Up)
                                         isJumping = true
                                         jumpVelocity = jumpPower
+                                        SoundSynthesizer.play(SoundType.JUMP)
                                     }
                                     gestureRegistered = true
                                 }
@@ -470,7 +639,8 @@ fun GameContainer(modifier: Modifier = Modifier) {
                 shieldDurationLeft = shieldDurationLeft,
                 magnetDurationLeft = magnetDurationLeft,
                 roadDecorationScroll = roadDecorationScroll,
-                gameState = gameState
+                gameState = gameState,
+                isInvincible = invincibilityTicks > 0
             )
 
             // Overlaid Game HUD (Active Playing details)
@@ -480,6 +650,7 @@ fun GameContainer(modifier: Modifier = Modifier) {
                     coinsCollected = coinsCollected,
                     shieldDurationLeft = shieldDurationLeft,
                     magnetDurationLeft = magnetDurationLeft,
+                    playerLives = playerLives,
                     onMoveLeft = {
                         if (currentLane == Lane.CENTER) currentLane = Lane.LEFT
                         else if (currentLane == Lane.RIGHT) currentLane = Lane.CENTER
@@ -491,6 +662,7 @@ fun GameContainer(modifier: Modifier = Modifier) {
                     onTriggerJump = {
                         if (!isJumping) {
                             isJumping = true; jumpVelocity = jumpPower
+                            SoundSynthesizer.play(SoundType.JUMP)
                         }
                     }
                 )
@@ -503,6 +675,7 @@ fun GameContainer(modifier: Modifier = Modifier) {
                     onStartClick = {
                         resetGame()
                         gameState = GameState.PLAYING
+                        SoundSynthesizer.play(SoundType.POWERUP)
                     }
                 )
             }
@@ -516,6 +689,7 @@ fun GameContainer(modifier: Modifier = Modifier) {
                     onRestartClick = {
                         resetGame()
                         gameState = GameState.PLAYING
+                        SoundSynthesizer.play(SoundType.POWERUP)
                     }
                 )
             }
@@ -540,6 +714,7 @@ fun playFrameTick(
     shieldDuration: Float,
     magnetDuration: Float,
     gameSpeed: Float,
+    isInvincible: Boolean,
     onScoreTick: () -> Unit,
     onCoinsTick: () -> Unit,
     onShieldBreak: () -> Unit,
@@ -581,7 +756,7 @@ fun playFrameTick(
         }
         
         // Collsion check zone: around progress 0.80f to 0.90f (where player runs)
-        if (obs.progress >= 0.81f && obs.progress <= 0.90f && !obs.isNetted) {
+        if (obs.progress >= 0.81f && obs.progress <= 0.90f && !obs.isNetted && !isInvincible) {
             // Get horizontal center of this obstacle's lane
             val obsX = when(obs.lane) {
                 Lane.LEFT -> -0.4f
@@ -838,6 +1013,7 @@ fun GameRendererCanvas(
     magnetDurationLeft: Float,
     roadDecorationScroll: Float,
     gameState: GameState,
+    isInvincible: Boolean,
     modifier: Modifier = Modifier
 ) {
     Canvas(
@@ -913,7 +1089,8 @@ fun GameRendererCanvas(
                 runCycle = runAnimationCycle,
                 isCrashed = gameState == GameState.GAME_OVER,
                 shieldActive = shieldDurationLeft > 0f,
-                magnetActive = magnetDurationLeft > 0f
+                magnetActive = magnetDurationLeft > 0f,
+                isInvincible = isInvincible
             )
         }
 
@@ -1677,7 +1854,8 @@ private fun DrawScope.drawRunningAthlete(
     runCycle: Float, // runs 0 to PI*2 cycle
     isCrashed: Boolean,
     shieldActive: Boolean,
-    magnetActive: Boolean
+    magnetActive: Boolean,
+    isInvincible: Boolean
 ) {
     val playerGroundY = 0.86f // Fixed baseline runner vertical position
     val baseCenterX = width / 2f
@@ -1692,6 +1870,22 @@ private fun DrawScope.drawRunningAthlete(
     val torsoHeight = 35.dp.toPx()
     val hipWidth = 12.dp.toPx()
 
+    // Invincibility flashing logic
+    val flashState = if (isInvincible) {
+        if ((System.currentTimeMillis() / 120) % 2 == 0L) 0.3f else 1.0f
+    } else {
+        1.0f
+    }
+
+    // Colors
+    val skinColor = Color(0xFFFCD5B5)                // Perfect peach athletic skin tone
+    val jerseyColor = Color(0xFFFF007F)              // Neon pink athletic racing singlet
+    val shortColor = Color(0xFF151522)               // Charcoal dark performance running shorts
+    val sneakerColor = Color(0xFF00FFCC)             // Luminous cyber-cyan running shoes
+    val sockColor = Color(0xFFFFFFFF)                // Pure white crew athletic socks
+    val headbandColor = Color(0xFF00FFCC)            // Cyber cyan sports headband
+    val hairColor = Color(0xFF4A3423)                // Sporty dark chestnut brown hair
+
     // 1. Draw Player Ground Shadow
     // Shadow remains elements on the track floor even when athlete jumps (Subway Surfers effect)
     val shadowY = horizonY + (playerGroundY - 0.35f) * (height - horizonY) / 0.65f
@@ -1705,27 +1899,43 @@ private fun DrawScope.drawRunningAthlete(
     )
 
     if (isCrashed) {
-        // Render crashed fallen posture (kneeling / lying flat)
+        // Render crashed fallen human athlete posture (sitting on track rubbing head/legs "Ouch!")
         // Head tilted down on ground
         drawCircle(
-            color = Color(0xFFFFB6C1), // flesh skin tone
-            radius = headRadius,
-            center = Offset(playerX - headRadius, playerY + torsoHeight * 0.2f)
+            color = skinColor, // Face skin tone
+            radius = headRadius * 0.85f,
+            center = Offset(playerX - headRadius * 1.1f, playerY + torsoHeight * 0.4f),
+            alpha = flashState
         )
-        // Red jersey torso crumpled flat
+        // Chestnut hair
+        drawCircle(
+            color = hairColor,
+            radius = headRadius * 0.65f,
+            center = Offset(playerX - headRadius * 1.3f, playerY + torsoHeight * 0.35f),
+            alpha = flashState
+        )
+        // Red jersey torso crumpled back
         drawRoundRect(
-            color = Color(0xFFFF3030),
-            topLeft = Offset(playerX - 25.dp.toPx(), playerY + torsoHeight * 0.4f),
-            size = Size(50.dp.toPx(), 18.dp.toPx()),
-            cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx())
+            color = jerseyColor,
+            topLeft = Offset(playerX - 22.dp.toPx(), playerY + torsoHeight * 0.5f),
+            size = Size(42.dp.toPx(), 16.dp.toPx()),
+            cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+            alpha = flashState
         )
-        // Legs stretched horizontally
+        // Knees bent holding leg
         drawLine(
-            color = Color(0xFF1C1C1C), // dark pants
-            start = Offset(playerX + 15.dp.toPx(), playerY + torsoHeight * 0.5f),
-            end = Offset(playerX + 55.dp.toPx(), playerY + torsoHeight * 0.7f),
-            strokeWidth = 10f,
+            color = skinColor.copy(alpha = flashState),
+            start = Offset(playerX + 15.dp.toPx(), playerY + torsoHeight * 0.6f),
+            end = Offset(playerX + 38.dp.toPx(), playerY + torsoHeight * 0.8f),
+            strokeWidth = 8f,
             cap = StrokeCap.Round
+        )
+        // cyan shoe on ground
+        drawCircle(
+            color = sneakerColor,
+            radius = 6.dp.toPx(),
+            center = Offset(playerX + 38.dp.toPx(), playerY + torsoHeight * 0.82f),
+            alpha = flashState
         )
         return
     }
@@ -1748,23 +1958,23 @@ private fun DrawScope.drawRunningAthlete(
         else -> Color(0xFFFF007F)
     }
     
-    // Draw 3 fading speed trail echoes behind the runner
+    // Draw 2 fading speed trail echoes behind the runner
     val motionOffsetFactor = if (isJumping) 1.3f else 1.0f
     for (step in 1..2) {
-        val trailAlpha = 0.25f / step
-        val trailY = playerY + (step * 25f * motionOffsetFactor)
+        val trailAlpha = 0.22f / step * flashState
+        val trailY = playerY + (step * 24f * motionOffsetFactor)
         val scale = 1.0f - (step * 0.15f)
         
         // Face/Jersey echo
         drawRoundRect(
-            color = trailColor.copy(alpha = trailAlpha),
+            color = jerseyColor.copy(alpha = trailAlpha),
             topLeft = Offset(playerX - 10.dp.toPx() * scale, trailY - headRadius + 4.dp.toPx()),
             size = Size(20.dp.toPx() * scale, torsoHeight * scale),
             cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx())
         )
-        // Cap echo
+        // Head echo
         drawCircle(
-            color = trailColor.copy(alpha = trailAlpha * 0.8f),
+            color = skinColor.copy(alpha = trailAlpha * 0.8f),
             radius = headRadius * 0.8f * scale,
             center = Offset(playerX, trailY - headRadius - 6.dp.toPx())
         )
@@ -1775,7 +1985,7 @@ private fun DrawScope.drawRunningAthlete(
         val pulse = sin(runCycle * 5f) * 8f
         // Dynamic magnetic field waves arching inwards
         for (wave in 0..1) {
-            val waveAlpha = 0.6f - wave * 0.25f
+            val waveAlpha = (0.6f - wave * 0.25f) * flashState
             val extRadiusW = (100f + wave * 40f + pulse).dp.toPx()
             val extRadiusH = (80f + wave * 30f).dp.toPx()
             val waveTopY = playerY - extRadiusH * 0.5f
@@ -1806,53 +2016,101 @@ private fun DrawScope.drawRunningAthlete(
     val torsoTop = Offset(playerX, playerY - headRadius)
     val torsoBottom = Offset(playerX, playerY + torsoHeight * 0.6f)
     
-    // A. Draw Torso / Athletic Shirt (Vivid orange/coral race singlet)
+    // A. Draw Torso / Athletic Shirt (Vibrant sports singlet with race bib number)
     drawRoundRect(
-        color = Color(0xFFFF5722), // Vibrant athletic orange jersey
+        color = jerseyColor,
         topLeft = Offset(playerX - 10.dp.toPx(), playerY - headRadius + 4.dp.toPx()),
         size = Size(20.dp.toPx(), torsoHeight),
-        cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx())
+        cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+        alpha = flashState
     )
-    // Draw race number bib "77" on the shirt chest
-    drawRect(
-        color = Color.White,
-        topLeft = Offset(playerX - 5.dp.toPx(), playerY),
-        size = Size(10.dp.toPx(), 8.dp.toPx())
+    
+    // Athlete Race Bib (white rectangle containing classic racer digit)
+    val bibX = playerX - 5.dp.toPx()
+    val bibY = playerY + 3.dp.toPx()
+    drawRoundRect(
+        color = Color.White.copy(alpha = flashState),
+        topLeft = Offset(bibX, bibY),
+        size = Size(10.dp.toPx(), 11.dp.toPx()),
+        cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+    )
+    // Draw running digit lines inside the race bib with soft gray/black lines
+    drawLine(
+        color = Color(0xFF1E1F29).copy(alpha = flashState),
+        start = Offset(bibX + 2.dp.toPx(), bibY + 3.dp.toPx()),
+        end = Offset(bibX + 8.dp.toPx(), bibY + 3.dp.toPx()),
+        strokeWidth = 3f,
+        cap = StrokeCap.Round
     )
     drawLine(
-        color = Color.Black,
-        start = Offset(playerX - 3.dp.toPx(), playerY + 3.dp.toPx()),
-        end = Offset(playerX + 3.dp.toPx(), playerY + 3.dp.toPx()),
-        strokeWidth = 1.5f
+        color = Color(0xFF1E1F29).copy(alpha = flashState),
+        start = Offset(bibX + 6.dp.toPx(), bibY + 3.dp.toPx()),
+        end = Offset(bibX + 4.dp.toPx(), bibY + 9.dp.toPx()),
+        strokeWidth = 2.5f,
+        cap = StrokeCap.Round
     )
 
-    // B. Draw Head & Hair (Athlete wearing cyan forward cap)
+    // B. Draw Head & Hair (Human face with sports headband & sunglasses)
+    // 1. Natural face skin base
     drawCircle(
-        color = Color(0xFFFCD5B5), // Skin tone peach
-        radius = headRadius * 0.85f,
-        center = Offset(playerX, playerY - headRadius - 6.dp.toPx())
+        color = skinColor,
+        radius = headRadius * 0.82f,
+        center = Offset(playerX, playerY - headRadius - 6.dp.toPx()),
+        alpha = flashState
     )
-    // Sporty Backwardscap (Vivid Cyan)
-    val capY = playerY - headRadius - 10.dp.toPx()
+    
+    // 2. Chestnut brown hair flows back/top
     drawArc(
-        color = Color(0xFF00E5FF),
-        startAngle = 180f,
-        sweepAngle = 180f,
+        color = hairColor.copy(alpha = flashState),
+        startAngle = 140f,
+        sweepAngle = 130f,
         useCenter = true,
-        topLeft = Offset(playerX - headRadius * 0.9f, capY - 4.dp.toPx()),
-        size = Size(headRadius * 1.8f, headRadius * 1.8f)
+        topLeft = Offset(playerX - headRadius * 0.9f, playerY - headRadius - 16.dp.toPx()),
+        size = Size(headRadius * 1.8f, headRadius * 1.5f)
     )
-    // Cap visor beak
-    drawRoundRect(
-        color = Color(0xFF00E5FF),
-        topLeft = Offset(playerX - headRadius * 1.4f, capY + 1.dp.toPx()),
-        size = Size(12.dp.toPx(), 3.dp.toPx()),
-        cornerRadius = CornerRadius(2f, 2f)
+    // Small extra pony-trail / hair fluff going backwards
+    drawCircle(
+        color = hairColor,
+        radius = headRadius * 0.35f,
+        center = Offset(playerX + headRadius * 0.7f, playerY - headRadius - 8.dp.toPx()),
+        alpha = flashState
     )
 
-    // C. Draw Legs (Hips down)
+    // 3. Stylish Neon Athletic Headband wrapped around forehead
+    drawRoundRect(
+        color = headbandColor.copy(alpha = flashState),
+        topLeft = Offset(playerX - headRadius * 0.85f, playerY - headRadius - 13.dp.toPx()),
+        size = Size(headRadius * 1.7f, 4.5.dp.toPx()),
+        cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+    )
+
+    // 4. Cool Dark Mirror Sports Glasses / Shades (Futuristic athletic style)
+    drawRoundRect(
+        color = Color(0xFF1E1F29).copy(alpha = flashState),
+        topLeft = Offset(playerX - headRadius * 0.75f, playerY - headRadius - 7.dp.toPx()),
+        size = Size(headRadius * 1.1f, 4.dp.toPx()),
+        cornerRadius = CornerRadius(1.5.dp.toPx(), 1.5.dp.toPx())
+    )
+    // Sleek cyan glare line on the glasses
+    drawLine(
+        color = Color(0xFF00FFCC).copy(alpha = flashState),
+        start = Offset(playerX - headRadius * 0.5f, playerY - headRadius - 5.dp.toPx()),
+        end = Offset(playerX - headRadius * 0.1f, playerY - headRadius - 5.dp.toPx()),
+        strokeWidth = 1f
+    )
+
+    // C. Draw Legs (Hips down with athletic sprint shorts, skin, socks, and sneakers)
     val leftHip = Offset(playerX - hipWidth * 0.4f, torsoBottom.y - 2.dp.toPx())
     val rightHip = Offset(playerX + hipWidth * 0.4f, torsoBottom.y - 2.dp.toPx())
+    
+    // Draw performance track shorts
+    drawRoundRect(
+        color = shortColor,
+        topLeft = Offset(playerX - 11.dp.toPx(), torsoBottom.y - 4.dp.toPx()),
+        size = Size(22.dp.toPx(), 9.dp.toPx()),
+        cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx()),
+        alpha = flashState
+    )
 
     if (isJumping) {
         // Dedicated Hurdle Aerial Vault jumping pose (legs tucked high in flight)
@@ -1860,56 +2118,78 @@ private fun DrawScope.drawRunningAthlete(
         val leftKnee = Offset(playerX - 18.dp.toPx(), leftHip.y + 12.dp.toPx())
         val leftAnkle = Offset(playerX - 10.dp.toPx(), leftKnee.y + 16.dp.toPx())
         
+        // Thigh
         drawLine(
-            color = Color(0xFF222222), // Running tights pants
+            color = skinColor.copy(alpha = flashState),
             start = leftHip,
             end = leftKnee,
-            strokeWidth = 9f,
+            strokeWidth = 8.5f,
             cap = StrokeCap.Round
         )
+        // Shin/Calf
         drawLine(
-            color = Color(0xFFFFB6C1), // Leg skin
+            color = skinColor.copy(alpha = flashState),
             start = leftKnee,
+            end = leftAnkle,
+            strokeWidth = 6.5f,
+            cap = StrokeCap.Round
+        )
+        // White Crew-cut Sock cuff
+        val lSockStart = Offset(leftKnee.x + (leftAnkle.x - leftKnee.x) * 0.6f, leftKnee.y + (leftAnkle.y - leftKnee.y) * 0.6f)
+        drawLine(
+            color = sockColor.copy(alpha = flashState),
+            start = lSockStart,
             end = leftAnkle,
             strokeWidth = 7f,
             cap = StrokeCap.Round
         )
-        // Left Yellow Shoe
-        drawCircle(Color(0xFFFFFF00), radius = 5.5f, center = leftAnkle)
+        // Vivid athletic sports sneaker shoe
+        drawCircle(sneakerColor.copy(alpha = flashState), radius = 6.5f, center = leftAnkle)
+        drawCircle(Color.White.copy(alpha = 0.8f * flashState), radius = 3.5f, center = leftAnkle) // sneaker sole/accent
 
         // Right Leg extended backward for balance
         val rightKnee = Offset(playerX + 16.dp.toPx(), rightHip.y + 5.dp.toPx())
         val rightAnkle = Offset(playerX + 22.dp.toPx(), rightKnee.y + 14.dp.toPx())
         drawLine(
-            color = Color(0xFF222222),
+            color = skinColor.copy(alpha = flashState),
             start = rightHip,
             end = rightKnee,
-            strokeWidth = 9f,
+            strokeWidth = 8.5f,
             cap = StrokeCap.Round
         )
         drawLine(
-            color = Color(0xFFFFB6C1),
+            color = skinColor.copy(alpha = flashState),
             start = rightKnee,
+            end = rightAnkle,
+            strokeWidth = 6.5f,
+            cap = StrokeCap.Round
+        )
+        // White Sock
+        val rSockStart = Offset(rightKnee.x + (rightAnkle.x - rightKnee.x) * 0.6f, rightKnee.y + (rightAnkle.y - rightKnee.y) * 0.6f)
+        drawLine(
+            color = sockColor.copy(alpha = flashState),
+            start = rSockStart,
             end = rightAnkle,
             strokeWidth = 7f,
             cap = StrokeCap.Round
         )
-        // Right Yellow Shoe
-        drawCircle(Color(0xFFFFFF00), radius = 5.5f, center = rightAnkle)
+        // Right sneaker
+        drawCircle(sneakerColor.copy(alpha = flashState), radius = 6.5f, center = rightAnkle)
+        drawCircle(Color.White.copy(alpha = 0.8f * flashState), radius = 3.5f, center = rightAnkle)
 
-        // Arms thrown high in air for flight stance
+        // Arms thrown high/forward in air for natural flight balance stance
         drawLine(
-            color = Color(0xFFFCD5B5),
+            color = skinColor.copy(alpha = flashState),
             start = Offset(playerX - 10.dp.toPx(), torsoTop.y + 10.dp.toPx()),
-            end = Offset(playerX - 18.dp.toPx(), torsoTop.y - 20.dp.toPx()),
-            strokeWidth = 7f,
+            end = Offset(playerX - 16.dp.toPx(), torsoTop.y - 12.dp.toPx()),
+            strokeWidth = 6.5f,
             cap = StrokeCap.Round
         )
         drawLine(
-            color = Color(0xFFFCD5B5),
+            color = skinColor.copy(alpha = flashState),
             start = Offset(playerX + 10.dp.toPx(), torsoTop.y + 10.dp.toPx()),
-            end = Offset(playerX + 18.dp.toPx(), torsoTop.y - 20.dp.toPx()),
-            strokeWidth = 7f,
+            end = Offset(playerX + 16.dp.toPx(), torsoTop.y - 12.dp.toPx()),
+            strokeWidth = 6.5f,
             cap = StrokeCap.Round
         )
 
@@ -1924,21 +2204,31 @@ private fun DrawScope.drawRunningAthlete(
         val leftAnkle = Offset(lAnkleX, lAnkleY)
 
         drawLine(
-            color = Color(0xFF111111), // Running tights shorts
+            color = skinColor.copy(alpha = flashState),
             start = leftHip,
             end = leftKnee,
             strokeWidth = 8.5f,
             cap = StrokeCap.Round
         )
         drawLine(
-            color = Color(0xFFFCD5B5), // Skin
+            color = skinColor.copy(alpha = flashState),
             start = leftKnee,
             end = leftAnkle,
             strokeWidth = 6.5f,
             cap = StrokeCap.Round
         )
-        // Yellow Running sneakers
-        drawCircle(color = Color(0xFFE2F017), radius = 5.5f, center = leftAnkle)
+        // White crew sock sleeve
+        val lSockStart = Offset(leftKnee.x + (leftAnkle.x - leftKnee.x) * 0.6f, leftKnee.y + (leftAnkle.y - leftKnee.y) * 0.6f)
+        drawLine(
+            color = sockColor.copy(alpha = flashState),
+            start = lSockStart,
+            end = leftAnkle,
+            strokeWidth = 7f,
+            cap = StrokeCap.Round
+        )
+        // Sport sneaker
+        drawCircle(color = sneakerColor.copy(alpha = flashState), radius = 6.5f, center = leftAnkle)
+        drawCircle(color = Color.White.copy(alpha = 0.8f * flashState), radius = 3.5f, center = leftAnkle)
 
         // Right Leg
         val rKneeY = rightHip.y + 18.dp.toPx()
@@ -1949,45 +2239,57 @@ private fun DrawScope.drawRunningAthlete(
         val rightAnkle = Offset(rAnkleX, rAnkleY)
 
         drawLine(
-            color = Color(0xFF111111),
+            color = skinColor.copy(alpha = flashState),
             start = rightHip,
             end = rightKnee,
             strokeWidth = 8.5f,
             cap = StrokeCap.Round
         )
         drawLine(
-            color = Color(0xFFFCD5B5),
+            color = skinColor.copy(alpha = flashState),
             start = rightKnee,
             end = rightAnkle,
             strokeWidth = 6.5f,
             cap = StrokeCap.Round
         )
-        drawCircle(color = Color(0xFFE2F017), radius = 5.5f, center = rightAnkle)
+        // White crew sock sleeve
+        val rSockStart = Offset(rightKnee.x + (rightAnkle.x - rightKnee.x) * 0.6f, rightKnee.y + (rightAnkle.y - rightKnee.y) * 0.6f)
+        drawLine(
+            color = sockColor.copy(alpha = flashState),
+            start = rSockStart,
+            end = rightAnkle,
+            strokeWidth = 7f,
+            cap = StrokeCap.Round
+        )
+        // Sport sneaker
+        drawCircle(color = sneakerColor.copy(alpha = flashState), radius = 6.5f, center = rightAnkle)
+        drawCircle(color = Color.White.copy(alpha = 0.8f * flashState), radius = 3.5f, center = rightAnkle)
 
-        // D. Draw Arms swinging
+        // D. Draw Arms swinging (Natural human skin arm limbs)
         // Left Arm
         val leftShoulder = Offset(playerX - 10.dp.toPx(), torsoTop.y + 8.dp.toPx())
         val leftElbow = Offset(leftShoulder.x + leftArmSwing * 12.dp.toPx() - 4.dp.toPx(), leftShoulder.y + 14.dp.toPx())
         drawLine(
-            color = Color(0xFFFCD5B5),
+            color = skinColor.copy(alpha = flashState),
             start = leftShoulder,
             end = leftElbow,
             strokeWidth = 6.5f,
             cap = StrokeCap.Round
         )
-        drawCircle(Color(0xFFFCD5B5), radius = 3.5f, center = leftElbow)
+        // Cool pink athletic wrist band on elbow joints
+        drawCircle(jerseyColor.copy(alpha = flashState), radius = 3.5f, center = leftElbow)
 
         // Right Arm
         val rightShoulder = Offset(playerX + 10.dp.toPx(), torsoTop.y + 8.dp.toPx())
         val rightElbow = Offset(rightShoulder.x + rightArmSwing * 12.dp.toPx() + 4.dp.toPx(), rightShoulder.y + 14.dp.toPx())
         drawLine(
-            color = Color(0xFFFCD5B5),
+            color = skinColor.copy(alpha = flashState),
             start = rightShoulder,
             end = rightElbow,
             strokeWidth = 6.5f,
             cap = StrokeCap.Round
         )
-        drawCircle(Color(0xFFFCD5B5), radius = 3.5f, center = rightElbow)
+        drawCircle(jerseyColor.copy(alpha = flashState), radius = 3.5f, center = rightElbow)
     }
 
     // Draw Active Protection Shield surrounding the runner
@@ -2022,6 +2324,7 @@ fun PlayHUD(
     coinsCollected: Int,
     shieldDurationLeft: Float,
     magnetDurationLeft: Float,
+    playerLives: Int,
     onMoveLeft: () -> Unit,
     onMoveRight: () -> Unit,
     onTriggerJump: () -> Unit
@@ -2035,7 +2338,7 @@ fun PlayHUD(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 50.dp)
+                .padding(horizontal = 14.dp, vertical = 50.dp)
                 .align(Alignment.TopCenter),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
@@ -2046,23 +2349,49 @@ fun PlayHUD(
                     .shadow(6.dp, RoundedCornerShape(12.dp))
                     .border(1.5.dp, Color(0xFF00FFCC).copy(alpha = 0.8f), RoundedCornerShape(12.dp))
                     .background(Color(0xE60A0616), RoundedCornerShape(12.dp))
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = "SCORE: ",
                     color = Color(0xFF00FFCC),
-                    fontSize = 12.sp,
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.sp
+                    letterSpacing = 0.5.sp
                 )
                 Text(
                     text = score.toInt().toString(),
                     color = Color.White,
-                    fontSize = 18.sp,
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.Black,
                     letterSpacing = 0.5.sp
                 )
+            }
+
+            // Health Board (Futuristic Cyber-Pink digital display with 3 Hearts represent)
+            Row(
+                modifier = Modifier
+                    .shadow(6.dp, RoundedCornerShape(12.dp))
+                    .border(1.5.dp, Color(0xFFFF2E63).copy(alpha = 0.8f), RoundedCornerShape(12.dp))
+                    .background(Color(0xE61F050A), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Text(
+                    text = "HP: ",
+                    color = Color(0xFFFF2E63),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.5.sp
+                )
+                for (i in 1..3) {
+                    val active = i <= playerLives
+                    Text(
+                        text = if (active) "❤️" else "🖤",
+                        fontSize = 12.sp
+                    )
+                }
             }
 
             // Coin Board (Vibrant Hot Yellow)
@@ -2071,20 +2400,20 @@ fun PlayHUD(
                     .shadow(6.dp, RoundedCornerShape(12.dp))
                     .border(1.5.dp, Color(0xFFFFD700).copy(alpha = 0.8f), RoundedCornerShape(12.dp))
                     .background(Color(0xE6191201), RoundedCornerShape(12.dp))
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
                     imageVector = Icons.Default.Star,
                     contentDescription = "Coin Icon",
                     tint = Color(0xFFFFD700),
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(16.dp)
                 )
-                Spacer(modifier = Modifier.width(6.dp))
+                Spacer(modifier = Modifier.width(4.dp))
                 Text(
                     text = coinsCollected.toString(),
                     color = Color.White,
-                    fontSize = 18.sp,
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.Black
                 )
             }
@@ -2151,39 +2480,65 @@ fun PlayHUD(
             }
         }
 
-        // On-screen manual Arrow controls (Enables effortless streaming emulator/Keyboard testing playability)
-        Row(
+        // On-screen manual Arrow controls (Positioned on sides for a gamepad-style layout to keep the middle lane runner unobstructed!)
+        Box(
             modifier = Modifier
+                .fillMaxWidth()
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 35.dp)
-                .fillMaxWidth(0.95f),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
+                .padding(start = 20.dp, end = 20.dp, bottom = 35.dp)
         ) {
-            // MOVE LEFT
-            Button(
-                onClick = onMoveLeft,
+            // Movement Controls on the Bottom-Left
+            Row(
                 modifier = Modifier
-                    .size(65.dp)
-                    .border(2.dp, Color(0xFFFF007F).copy(alpha = 0.8f), CircleShape)
-                    .testTag("left_lane_button"),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xBF0F0510)),
-                shape = CircleShape,
-                contentPadding = PaddingValues(0.dp)
+                    .align(Alignment.CenterStart),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "◀",
-                    color = Color.White,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Black
-                )
+                // MOVE LEFT
+                Button(
+                    onClick = onMoveLeft,
+                    modifier = Modifier
+                        .size(65.dp)
+                        .border(2.dp, Color(0xFFFF007F).copy(alpha = 0.8f), CircleShape)
+                        .testTag("left_lane_button"),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xBF0F0510)),
+                    shape = CircleShape,
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text(
+                        text = "◀",
+                        color = Color.White,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                }
+
+                // MOVE RIGHT
+                Button(
+                    onClick = onMoveRight,
+                    modifier = Modifier
+                        .size(65.dp)
+                        .border(2.dp, Color(0xFF00FFCC).copy(alpha = 0.8f), CircleShape)
+                        .testTag("right_lane_button"),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xBF051210)),
+                    shape = CircleShape,
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text(
+                        text = "▶",
+                        color = Color.White,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                }
             }
 
-            // VAULT JUMP
+            // JUMP Action Control on the Bottom-Right
             Button(
                 onClick = onTriggerJump,
                 modifier = Modifier
-                    .size(85.dp)
+                    .align(Alignment.CenterEnd)
+                    .size(80.dp)
                     .shadow(8.dp, CircleShape)
                     .border(2.5.dp, Color.White, CircleShape)
                     .testTag("jump_action_button"),
@@ -2195,36 +2550,17 @@ fun PlayHUD(
                     Text(
                         text = "▲",
                         color = Color.White,
-                        fontSize = 28.sp,
-                        lineHeight = 28.sp
+                        fontSize = 26.sp,
+                        lineHeight = 26.sp
                     )
                     Text(
                         text = "JUMP",
                         color = Color.White,
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Black,
                         letterSpacing = 1.sp
                     )
                 }
-            }
-
-            // MOVE RIGHT
-            Button(
-                onClick = onMoveRight,
-                modifier = Modifier
-                    .size(65.dp)
-                    .border(2.dp, Color(0xFF00FFCC).copy(alpha = 0.8f), CircleShape)
-                    .testTag("right_lane_button"),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xBF051210)),
-                shape = CircleShape,
-                contentPadding = PaddingValues(0.dp)
-            ) {
-                Text(
-                    text = "▶",
-                    color = Color.White,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Black
-                )
             }
         }
     }
